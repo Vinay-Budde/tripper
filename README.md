@@ -124,10 +124,12 @@ PolicyFlow implements **all 4 reliability scenarios** specified in the challenge
 
 ```bash
 # 1. Clone repository & enter directory
-cd c:\tripper
+git clone https://github.com/Vinay-Budde/tripper.git
+cd tripper
 
 # 2. Copy environment file (configured by default for zero-config SQLite)
 cp .env.example .env
+# Windows PowerShell alternative: Copy-Item .env.example .env
 
 # 3. Install composer dependencies (if not already installed)
 composer install
@@ -135,6 +137,7 @@ composer install
 # 4. Generate app key & create database
 php artisan key:generate
 touch database/database.sqlite
+# Windows PowerShell alternative: New-Item -ItemType File -Path database/database.sqlite -Force
 php artisan migrate --force
 
 # 5. Run tests
