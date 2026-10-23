@@ -44,41 +44,83 @@ class PolicyFlowService
                 ->first();
 
             if ($existing) {
+                // Check for payload conflict on repeated intake with same agent_id + client_request_id
+                $conflicts = [];
+                if ($existing->customer_name !== $data['customer_name']) {
+                    $conflicts[] = 'customer_name';
+                }
+                if ($existing->date_of_birth->format('Y-m-d') !== $data['date_of_birth']) {
+                    $conflicts[] = 'date_of_birth';
+                }
+                if ($existing->destination !== strtoupper($data['destination'])) {
+                    $conflicts[] = 'destination';
+                }
+                if ($existing->trip_start->format('Y-m-d') !== $data['trip_start']) {
+                    $conflicts[] = 'trip_start';
+                }
+                if ($existing->trip_end->format('Y-m-d') !== $data['trip_end']) {
+                    $conflicts[] = 'trip_end';
+                }
+                if ($existing->plan_code !== strtoupper($data['plan_code'])) {
+                    $conflicts[] = 'plan_code';
+                }
+                if ($existing->sum_insured !== (int) $data['sum_insured']) {
+                    $conflicts[] = 'sum_insured';
+                }
+
+                if (!empty($conflicts)) {
+                    throw new InvalidArgumentException(
+                        'Idempotency key collision: A policy request with this agent_id and client_request_id already exists with different payload attributes (' . implode(', ', $conflicts) . ').'
+                    );
+                }
+
                 return [
                     'is_new' => false,
                     'policy_request' => $existing,
                 ];
             }
 
-            $policyRequest = PolicyRequest::create([
-                'client_request_id' => $data['client_request_id'],
-                'agent_id' => $data['agent_id'],
-                'customer_name' => $data['customer_name'],
-                'date_of_birth' => $data['date_of_birth'],
-                'destination' => strtoupper($data['destination']),
-                'trip_start' => $data['trip_start'],
-                'trip_end' => $data['trip_end'],
-                'plan_code' => strtoupper($data['plan_code']),
-                'sum_insured' => (int) $data['sum_insured'],
-                'travel_days' => $pricing['travel_days'],
-                'base_daily_rate' => $pricing['base_daily_rate'],
-                'age_multiplier' => $pricing['age_multiplier'],
-                'destination_multiplier' => $pricing['destination_multiplier'],
-                'coverage_multiplier' => $pricing['coverage_multiplier'],
-                'calculated_premium' => $pricing['calculated_premium'],
-                'status' => PolicyStatus::VALIDATED, // Validated upon calculation
-                'attempt_count' => 0,
-            ]);
+            try {
+                $policyRequest = PolicyRequest::create([
+                    'client_request_id' => $data['client_request_id'],
+                    'agent_id' => $data['agent_id'],
+                    'customer_name' => $data['customer_name'],
+                    'date_of_birth' => $data['date_of_birth'],
+                    'destination' => strtoupper($data['destination']),
+                    'trip_start' => $data['trip_start'],
+                    'trip_end' => $data['trip_end'],
+                    'plan_code' => strtoupper($data['plan_code']),
+                    'sum_insured' => (int) $data['sum_insured'],
+                    'travel_days' => $pricing['travel_days'],
+                    'base_daily_rate' => $pricing['base_daily_rate'],
+                    'age_multiplier' => $pricing['age_multiplier'],
+                    'destination_multiplier' => $pricing['destination_multiplier'],
+                    'coverage_multiplier' => $pricing['coverage_multiplier'],
+                    'calculated_premium' => $pricing['calculated_premium'],
+                    'status' => PolicyStatus::VALIDATED, // Validated upon calculation
+                    'attempt_count' => 0,
+                ]);
 
-            $this->recordHistory($policyRequest, PolicyStatus::RECEIVED, PolicyStatus::VALIDATED, 'INTAKE', [
-                'premium' => $pricing['calculated_premium'],
-                'travel_days' => $pricing['travel_days'],
-            ]);
+                $this->recordHistory($policyRequest, PolicyStatus::RECEIVED, PolicyStatus::VALIDATED, 'INTAKE', [
+                    'premium' => $pricing['calculated_premium'],
+                    'travel_days' => $pricing['travel_days'],
+                ]);
 
-            return [
-                'is_new' => true,
-                'policy_request' => $policyRequest,
-            ];
+                return [
+                    'is_new' => true,
+                    'policy_request' => $policyRequest,
+                ];
+            } catch (\Illuminate\Database\UniqueConstraintViolationException $e) {
+                // Concurrency race: Another concurrent worker just created it
+                $raceExisting = PolicyRequest::where('agent_id', $data['agent_id'])
+                    ->where('client_request_id', $data['client_request_id'])
+                    ->firstOrFail();
+
+                return [
+                    'is_new' => false,
+                    'policy_request' => $raceExisting,
+                ];
+            }
         });
     }
 

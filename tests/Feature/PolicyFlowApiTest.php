@@ -441,4 +441,73 @@ class PolicyFlowApiTest extends TestCase
         $this->assertCount(2, $listRes->json('data'));
         $this->assertEquals(3, $listRes->json('pagination.total'));
     }
+
+    public function test_conflicting_payload_with_same_idempotency_key_is_rejected(): void
+    {
+        $payload1 = [
+            'client_request_id' => 'AGT-CONFLICT-01',
+            'agent_id' => 'AGENT-COLLIDE',
+            'customer_name' => 'Initial User',
+            'date_of_birth' => '1990-01-01',
+            'destination' => 'DOMESTIC',
+            'trip_start' => '2026-06-01',
+            'trip_end' => '2026-06-02',
+            'plan_code' => 'BASIC',
+            'sum_insured' => 100000,
+        ];
+
+        $this->postJson('/api/policy-requests', $payload1)->assertStatus(201);
+
+        // Same agent_id + client_request_id, but different customer_name & plan_code
+        $payload2 = array_merge($payload1, [
+            'customer_name' => 'Different Person Completely',
+            'plan_code' => 'PREMIUM',
+        ]);
+
+        $res = $this->postJson('/api/policy-requests', $payload2);
+        $res->assertStatus(409)
+            ->assertJson([
+                'success' => false,
+            ])
+            ->assertJsonFragment([
+                'message' => 'Idempotency key collision: A policy request with this agent_id and client_request_id already exists with different payload attributes (customer_name, plan_code).',
+            ]);
+    }
+
+    public function test_invalid_state_regression_from_issued_is_rejected(): void
+    {
+        $payload = [
+            'client_request_id' => 'AGT-REGRESS-01',
+            'agent_id' => 'AGENT-REGRESS',
+            'customer_name' => 'State Test',
+            'date_of_birth' => '1990-01-01',
+            'destination' => 'DOMESTIC',
+            'trip_start' => '2026-06-01',
+            'trip_end' => '2026-06-02',
+            'plan_code' => 'BASIC',
+            'sum_insured' => 100000,
+        ];
+
+        $intake = $this->postJson('/api/policy-requests', $payload)->assertStatus(201);
+        $policyId = $intake->json('data.id');
+
+        $this->postJson("/api/policy-requests/{$policyId}/submit", ['scenario' => 'SUCCESS'])->assertStatus(200);
+
+        $policy = PolicyRequest::find($policyId);
+        $this->assertEquals('ISSUED', $policy->status->value);
+
+        // Callback trying to fail or reject already ISSUED policy
+        $callbackReject = [
+            'event_id' => 'EVT-REGRESS-REJECT',
+            'event_type' => 'POLICY_REJECTED',
+            'provider_reference' => $policy->provider_reference,
+            'reason' => 'Late provider rejection notice',
+        ];
+
+        $res = $this->postJson('/api/mock-insurer/callback', $callbackReject);
+        $res->assertStatus(200);
+
+        // Verify policy status remains ISSUED
+        $this->assertEquals('ISSUED', $policy->fresh()->status->value);
+    }
 }

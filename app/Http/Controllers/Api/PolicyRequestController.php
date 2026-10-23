@@ -55,6 +55,11 @@ class PolicyRequestController extends Controller
                     'created_at' => $policy->created_at->toIso8601String(),
                 ],
             ], $statusCode);
+        } catch (\InvalidArgumentException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 409);
         } catch (Throwable $e) {
             return response()->json([
                 'success' => false,
